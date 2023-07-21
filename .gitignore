@@ -161,3 +161,4 @@ cython_debug/
 
 dataset_observing.ipynb
 rul_metrics.ipynb
+tests.ipynb
