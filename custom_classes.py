@@ -8,20 +8,30 @@ from torch.utils.data import Dataset, DataLoader
 
 class NasaDataset(Dataset):
 
-    def __init__(self, dataset_path: str, transform = None):
-        self.dataset = pd.read_csv(dataset_path)
-        self.ruls = self.dataset.pop('RUL').values
-        self.machine_ids = self.dataset.pop('unit_number')
-        self.dataset = self.dataset.values
+    def __init__(self, dataset_path: str = None, dataset_dict: dict = None, transform = None):
+        if dataset_path:
+            self.dataset = pd.read_csv(dataset_path)
+            self.ruls = self.dataset.pop('RUL').values
+            self.machine_ids = self.dataset.pop('unit_number')
+            self.dataset = self.dataset.values
+        
+        elif dataset_dict:
+            self.dataset = dataset_dict['sensors']
+            self.ruls = dataset_dict['rul']
+            self.machine_ids = dataset_dict['machine_id']
+
         self.transfrom = transform
     
-    def get_input_shape(self):
+    def get_input_shape(self) -> int:
         return self.dataset.shape[1]
+    
+    def get_whole_dataset(self) -> tuple:
+        return self.dataset, self.machine_ids, self.ruls
 
-    def __len__(self):
+    def __len__(self) -> int:
         return self.dataset.shape[0]
 
-    def __getitem__(self, idx: int):
+    def __getitem__(self, idx: int) -> dict:
         if torch.is_tensor(idx):
             return idx.tolist()
         
@@ -58,3 +68,30 @@ class SimpleAE(nn.Module):
         encoded = self.encoder(x)
         decoded = self.decoder(encoded)
         return encoded, decoded
+
+
+def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: float = None):
+
+    def __splitter(sensors, machine_ids, ruls, mask: np.array) -> NasaDataset:
+        dataset_dict = {
+            'sensors': sensors[mask],
+            'machine_ids': machine_ids[mask],
+            'ruls': ruls[mask]
+        }
+
+        return NasaDataset(dataset_dict=dataset_dict)
+
+
+    if train_size:
+        assert train_size < 1 and train_size > 0, "\'train_size\' has to be in interval (0.0, 1.0)"
+        test_size = 1 - train_size
+    
+    assert test_size < 1 and test_size > 0, "\'test_size\' has to be in interval (0.0, 1.0)"
+
+    sensors, machine_ids, ruls = dataset.get_whole_dataset()
+    uniq_ids = torch.unique(machine_ids)
+    test_machines = np.random.choice(uniq_ids, uniq_ids * int(test_size*len(uniq_ids)))
+    test_mask = torch.isin(machine_ids, test_machines)
+    train_dataset = __splitter(sensors, machine_ids, ruls, torch.logical_not(test_mask))
+    test_dataset = __splitter(sensors, machine_ids, ruls, test_mask)
+    return train_dataset, test_dataset
