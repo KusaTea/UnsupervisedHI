@@ -6,14 +6,22 @@ from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
 
+def fix_seeds(seed, verbose: bool = False):
+    np.random.seed(seed)
+    torch.random.manual_seed(seed)
+    if verbose:
+        print('Seeds are fixed')
+
+
 class NasaDataset(Dataset):
 
-    def __init__(self, dataset_path: str = None, dataset_dict: dict = None, transform = None):
+    def __init__(self, dataset_path: str = None, dataset_dict: dict = None,
+                 transform = None, device: torch.device = None):
         if dataset_path:
             self.dataset = pd.read_csv(dataset_path)
-            self.ruls = self.dataset.pop('RUL').values
-            self.machine_ids = self.dataset.pop('unit_number')
-            self.dataset = self.dataset.values
+            self.ruls = torch.FloatTensor(self.dataset.pop('RUL').values)
+            self.machine_ids = torch.FloatTensor(self.dataset.pop('unit_number').values)
+            self.dataset = torch.FloatTensor(self.dataset.values)
         
         elif dataset_dict:
             self.dataset = dataset_dict['sensors']
@@ -21,7 +29,15 @@ class NasaDataset(Dataset):
             self.machine_ids = dataset_dict['machine_id']
 
         self.transfrom = transform
+
+        if device:
+            self.to(device)
     
+    def to(self, device):
+        self.dataset = self.dataset.to(device)
+        self.ruls = self.ruls.to(device)
+        self.machine_ids = self.machine_ids.to(device)
+
     def get_input_shape(self) -> int:
         return self.dataset.shape[1]
     
@@ -75,8 +91,8 @@ def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: flo
     def __splitter(sensors, machine_ids, ruls, mask: np.array) -> NasaDataset:
         dataset_dict = {
             'sensors': sensors[mask],
-            'machine_ids': machine_ids[mask],
-            'ruls': ruls[mask]
+            'machine_id': machine_ids[mask],
+            'rul': ruls[mask]
         }
 
         return NasaDataset(dataset_dict=dataset_dict)
@@ -90,7 +106,7 @@ def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: flo
 
     sensors, machine_ids, ruls = dataset.get_whole_dataset()
     uniq_ids = torch.unique(machine_ids)
-    test_machines = np.random.choice(uniq_ids, uniq_ids * int(test_size*len(uniq_ids)))
+    test_machines = torch.tensor(np.random.choice(uniq_ids, int(test_size*len(uniq_ids))))
     test_mask = torch.isin(machine_ids, test_machines)
     train_dataset = __splitter(sensors, machine_ids, ruls, torch.logical_not(test_mask))
     test_dataset = __splitter(sensors, machine_ids, ruls, test_mask)
