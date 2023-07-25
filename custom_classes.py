@@ -1,14 +1,16 @@
 import numpy as np
 import pandas as pd
+import random
 
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
 
 
-def fix_seeds(seed, verbose: bool = False):
+def seed_everything(seed, verbose: bool = False):
     np.random.seed(seed)
     torch.random.manual_seed(seed)
+    random.seed(seed)
     if verbose:
         print('Seeds are fixed')
 
