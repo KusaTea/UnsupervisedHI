@@ -12,9 +12,8 @@ def standard_scaling(dataset: NasaDataset):
 
 def min_max_scaling(dataset: NasaDataset):
     dta = dataset.dataset
-    min = dta.min(axis=0, keepdim=True)
-    max = dta.max(axis=0, keepdim=True)
-    std = (dta - min) / (max - min)
-    dataset.dataset = std * (max - min) + max
+    mn = dta.min(axis=0, keepdim=True).values
+    mx = dta.max(axis=0, keepdim=True).values
+    dataset.dataset = (dta - mn) / (mx - mn)
     assert not torch.isin(torch.inf, dataset.dataset)
     assert not torch.isin(torch.nan, dataset.dataset)
