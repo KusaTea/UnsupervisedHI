@@ -25,10 +25,11 @@ def mean_squared_distance(test_rul: np.array, target_rul: np.array) -> float:
 class SBCLoss(nn.Module):
 
     def __init__(self):
-        super().__init__(SBCLoss, self)
+        super(SBCLoss, self).__init__()
     
     def forward(self, output: torch.Tensor, target: torch.Tensor):
-        target = torch.FloatTensor(target)
+        if not isinstance(target, torch.Tensor):
+            target = torch.FloatTensor(target)
         loss_func = self.sbc_multispace
         loss = loss_func(output, target)
         return loss
@@ -75,7 +76,8 @@ class RMSELoss(nn.Module):
         super().__init__(RMSELoss, self)
     
     def forward(self, output: torch.Tensor, target: torch.Tensor):
-        target = torch.Tensor(target)
+        if not isinstance(target, torch.Tensor):
+            target = torch.FloatTensor(target)
         loss_func = torch.nn.MSELoss()
         loss = torch.sqrt(loss_func(output, target))
         return loss
@@ -86,10 +88,11 @@ class RMSELoss(nn.Module):
 class RULScore(nn.Module):
 
     def __init__(self):
-        super().__init__(RULScore, self)
+        super(RULScore, self).__init__()
     
     def forward(self, output: torch.Tensor, target: torch.Tensor):
-        target = torch.FloatTensor(target)
+        if not isinstance(target, torch.Tensor):
+            target = torch.FloatTensor(target)
         err = target - output
 
         less = torch.where(err < 0)[0]

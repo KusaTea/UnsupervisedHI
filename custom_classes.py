@@ -76,7 +76,7 @@ class SimpleAE(nn.Module):
             nn.Linear(in_features=layers_sizes[2], out_features=layers_sizes[1]),
             nn.SiLU(),
             nn.Linear(in_features=layers_sizes[1], out_features=layers_sizes[2]),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Linear(in_features=layers_sizes[2], out_features=input_shape)
         )
     
