@@ -10,5 +10,5 @@ Unsupervised approach to Health Index estimation​
 <li>construct_dataset - создание датасета (совмещает в себе функционал RUL_adding_ipynb и DEA_Visualization)</li>
 <li>custom_classes - классы автокодировщика и датасета, и функции разделения датасетов</li>
 <li>normalisation - методы нормализации данных</li>
-<li>rul_netrics - метрики для сравнения истиных и предсказанных кривых HI и значений RUL</li>
+<li>rul_metrics - метрики для сравнения истиных и предсказанных кривых HI и значений RUL</li>
 </ul>
