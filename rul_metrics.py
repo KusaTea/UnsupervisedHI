@@ -73,7 +73,7 @@ class SBCLoss(nn.Module):
 class RMSELoss(nn.Module):
     
     def __init__(self):
-        super().__init__(RMSELoss, self)
+        super(RMSELoss, self).__init__()
     
     def forward(self, output: torch.Tensor, target: torch.Tensor):
         if not isinstance(target, torch.Tensor):
