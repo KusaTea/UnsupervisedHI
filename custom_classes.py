@@ -113,3 +113,22 @@ def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: flo
     train_dataset = __splitter(sensors, machine_ids, ruls, torch.logical_not(test_mask))
     test_dataset = __splitter(sensors, machine_ids, ruls, test_mask)
     return train_dataset, test_dataset
+
+
+def split_anomaly_normal(dataset: NasaDataset):
+    def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
+        dataset_dict = {
+            'sensors': sensors[ids],
+            'machine_id': machine_ids[ids],
+            'rul': ruls[ids]
+        }
+
+        return NasaDataset(dataset_dict=dataset_dict)
+    
+
+    sensors, machine_ids, ruls = dataset.get_whole_dataset()
+    normal_ids = torch.where(ruls == 125)[0]
+    anomaly_ids = torch.where(ruls < 125)[0]
+    normal_data = __splitter(sensors, machine_ids, ruls, normal_ids)
+    anomaly_data = __splitter(sensors, machine_ids, ruls, anomaly_ids)
+    return normal_data, anomaly_data
