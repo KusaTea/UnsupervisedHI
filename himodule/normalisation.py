@@ -1,4 +1,3 @@
-from custom_classes import NasaDataset
 import torch
 
 
