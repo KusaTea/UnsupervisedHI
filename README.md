@@ -1,6 +1,8 @@
 # UnsupervisedHI
 Unsupervised approach to Health Index estimation​
 
+Графики и параметры обученных моделей: https://drive.google.com/drive/folders/1_cjUOqNM5LV7HuL8t4pkXyK8FtYCJWf1?usp=drive_link
+
 Описание файлов:<ul>
 <li>RUL_adding_ipynb - код для выделения колонки RUL</li>
 <li>DEA_Visualization - очистка датасета</li>
