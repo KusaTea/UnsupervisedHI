@@ -41,7 +41,10 @@ It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machin
         self.transfrom = transform
 
         if device:
-            self.to(device)
+            self.device = device
+            self.to(self.device)
+        else:
+            self.device = self.ruls.device.type
     
     def to(self, device):
         '''Transfers all tensors to "device".'''
@@ -83,11 +86,12 @@ class AnomalyLoader:
         self.dataset = dataset
         self.batch_size = batch_size if batch_size else len(dataset)
 
+    def reset_everything(self):
         self.idx = 0
-        self.machine_ids = torch.unique(dataset.machine_ids)
+        self.machine_ids = torch.unique(self.dataset.machine_ids)
         self.current_machine_id = self.machine_ids[self.idx]
-        self.current_start = -batch_size
-        self.current_indeces = dataset.get_indeces(self.current_machine_id)
+        self.current_start = -self.batch_size
+        self.current_indeces = self.dataset.get_indeces(self.current_machine_id)
     
     def __iter__(self):
         return self
@@ -103,6 +107,72 @@ class AnomalyLoader:
             else:
                 raise StopIteration
         return self.dataset[self.current_indeces[self.current_start:self.current_start + self.batch_size]]
+
+
+class WindowedLoader:
+
+    '''Loads data by batch for each machine.'''
+
+    def __init__(self, dataset: NasaDataset, batch_size: int = None, window_size: int = 20):
+        self.dataset = dataset
+        self.batch_size = batch_size if batch_size else len(dataset)
+        self.window_size = window_size
+        self.device = self.dataset.device
+
+        self.reset_everything()
+    
+    def reset_everything(self):
+        self.idx = 0
+        self.machine_ids = torch.unique(self.dataset.machine_ids)
+        self.current_machine_id = self.machine_ids[self.idx]
+        self.current_start = -1
+        self.current_indeces = self.dataset.get_indeces(self.current_machine_id)
+        self.flag = False
+    
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if not self.flag:
+            rul_batch, sensors_batch, machine_id_batch, indeces_batch = list(), list(), list(), list()
+            # Get batch
+            for _ in range(self.batch_size):
+                # Do step
+                self.current_start += 1
+                
+                # Go to the next machine if got all data of the current machine
+                if self.current_start >= len(self.current_indeces) - self.window_size + 1:
+                    self.idx += 1
+                    if self.idx < len(self.machine_ids):
+                        self.current_machine_id = self.machine_ids[self.idx]
+                        self.current_indeces = self.dataset.get_indeces(self.current_machine_id)
+                        self.current_start = -1
+                    # If all machines were observed stop iteration
+                    else:
+                        self.flag = True
+                    break
+                
+                # Get windowed data
+                inds = self.current_indeces[self.current_start: self.current_start + self.window_size]
+                dta = self.dataset[inds]
+                rul_batch.append(dta['rul'])
+                sensors_batch.append(dta['sensors'])
+                machine_id_batch.append(dta['machine_id'])
+                indeces_batch.append(inds)
+
+            try:
+                return {
+                    'sensors': torch.stack(sensors_batch),
+                    'rul': torch.stack(rul_batch),
+                    'machine_id': torch.stack(machine_id_batch),
+                    'indeces': torch.stack(indeces_batch)
+                }
+            except RuntimeError:
+                return self.__next__()
+        
+        else:
+            self.reset_everything()
+            raise StopIteration
 
 
 class SimpleAE(nn.Module):
@@ -133,18 +203,56 @@ class SimpleAE(nn.Module):
         return encoded, decoded
 
 
+class AEConstructor(nn.Module):
+
+    '''Creates autoencoder by obtained characteristics.'''
+
+    def __init__(self, input_shape: int, window_size: int, layers_sizes: tuple):
+        super(AEConstructor, self).__init__()
+        self.encoder = nn.Sequential(nn.Flatten(),
+                                     nn.Linear(in_features=input_shape*window_size, out_features=layers_sizes[0]))
+        for in_features, out_features in zip(layers_sizes[:-1], layers_sizes[1:]):
+            linear, activation = self.ae_block(in_features, out_features)
+            self.encoder.append(activation)
+            self.encoder.append(linear)
+
+        self.decoder = nn.Sequential()
+        for in_features, out_features in zip(layers_sizes[:0:-1], layers_sizes[-2::-1]):
+            linear, activation = self.ae_block(in_features, out_features)
+            self.decoder.append(linear)
+            self.decoder.append(activation)
+        self.decoder.append(nn.Linear(in_features=layers_sizes[0], out_features=input_shape*window_size))
+        self.decoder.append(nn.Unflatten(1, (window_size, input_shape)))
+    
+    @staticmethod
+    def ae_block(in_features: int, out_features: int) -> Tuple[nn.Linear, nn.SiLU]:
+        linear = nn.Linear(in_features=in_features, out_features=out_features)
+        activation = nn.SiLU()
+        return linear, activation
+    
+    def forward(self, x) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return encoded, decoded
+
+
 class LossAndMetric(nn.Module):
 
     '''Model evaluating block.'''
 
-    def __init__(self, loss_func: object, metric_func: object, scaler: object = None):
+    def __init__(self, loss_func: object, metric_func: object, scaler: object = None, transform = None):
         super(LossAndMetric, self).__init__()
         self.loss_func = loss_func
         self.metric_func = metric_func
         self.scaler = scaler
+        self.transform = transform
     
     
     def forward(self, predicted_values: torch.Tensor, true_values: torch.Tensor) -> tuple:
+        if self.transform:
+            predicted_values = self.transform(predicted_values)
+            true_values = self.transform(true_values)
+        
         loss = self.loss_func(predicted_values, true_values)
 
         if self.scaler:
@@ -199,6 +307,39 @@ def split_anomaly_normal(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset
     sensors, machine_ids, ruls = dataset.get_whole_dataset()
     normal_ids = torch.where(ruls == 125)[0]
     anomaly_ids = torch.where(ruls < 125)[0]
+    normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
+    anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
+    return normal_data, anomaly_data
+
+
+def split_anomaly_normal23(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset]:
+    def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
+        dataset_dict = {
+            'sensors': sensors[ids],
+            'machine_id': machine_ids[ids],
+            'rul': ruls[ids]
+        }
+
+        return dataset_dict
+    
+
+    sensors, machine_ids, ruls = dataset.get_whole_dataset()
+    normal_ids, anomaly_ids = list(), list()
+    for id in machine_ids.unique():
+        r_indeces = torch.where(machine_ids == id)[0]
+        r = ruls[machine_ids == id]
+        mixed = r_indeces[torch.where(r == 125)[0]]
+        normal = mixed[:2*len(mixed)//3]
+        anomaly = r_indeces[torch.where(r < 125)[0]]
+        anomaly = torch.hstack((mixed[2*len(mixed)//3:], anomaly))
+        normal_ids.append(normal)
+        anomaly_ids.append(anomaly)
+
+    normal_ids = torch.hstack(normal_ids)
+    anomaly_ids = torch.hstack(anomaly_ids)
+
+    
+
     normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
     anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
     return normal_data, anomaly_data

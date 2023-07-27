@@ -43,3 +43,23 @@ class MinMaxScaler:
         dataset = dataset[:,:]
         dataset = dataset * (self.mx - self.mn) + self.mn
         return dataset
+    
+
+class ErrorScaler:
+    def fit(self, dataset: torch.Tensor):
+        self.mn = dataset.min(axis=0, keepdim=True).values
+        self.mx = dataset.max(axis=0, keepdim=True).values
+
+    def transform(self, dataset: torch.Tensor) -> torch.Tensor:
+        dataset = torch.clone(dataset)
+        dataset = (-dataset + self.mx) / (self.mx - self.mn)
+        return dataset
+
+    def fit_transform(self, dataset: torch.Tensor) -> torch.Tensor:
+        self.fit(dataset)
+        return self.transform(dataset)
+
+    def inverse_transform(self, dataset: torch.Tensor) -> torch.Tensor:
+        dataset = torch.clone(dataset)
+        dataset = -(dataset * (self.mx - self.mn) - self.mx)
+        return dataset
