@@ -310,3 +310,36 @@ def split_anomaly_normal(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset
     normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
     anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
     return normal_data, anomaly_data
+
+
+def split_anomaly_normal23(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset]:
+    def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
+        dataset_dict = {
+            'sensors': sensors[ids],
+            'machine_id': machine_ids[ids],
+            'rul': ruls[ids]
+        }
+
+        return dataset_dict
+    
+
+    sensors, machine_ids, ruls = dataset.get_whole_dataset()
+    normal_ids, anomaly_ids = list(), list()
+    for id in machine_ids.unique():
+        r_indeces = torch.where(machine_ids == id)[0]
+        r = ruls[machine_ids == id]
+        mixed = r_indeces[torch.where(r == 125)[0]]
+        normal = mixed[:2*len(mixed)//3]
+        anomaly = r_indeces[torch.where(r < 125)[0]]
+        anomaly = torch.hstack((mixed[2*len(mixed)//3:], anomaly))
+        normal_ids.append(normal)
+        anomaly_ids.append(anomaly)
+
+    normal_ids = torch.hstack(normal_ids)
+    anomaly_ids = torch.hstack(anomaly_ids)
+
+    
+
+    normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
+    anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
+    return normal_data, anomaly_data
