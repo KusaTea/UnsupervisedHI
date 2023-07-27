@@ -4,6 +4,8 @@ from torch import nn
 
 class MAPE(nn.Module):
 
+    '''Custom pytorch Loss class. Calculates Mean Absolute Percentage Error.'''
+
     def __init__(self):
         super(MAPE, self).__init__()
     
