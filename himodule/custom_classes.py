@@ -5,9 +5,13 @@ import random
 import torch
 from torch import nn
 from torch.utils.data import Dataset, DataLoader
+from typing import Tuple
 
 
 def seed_everything(seed, verbose: bool = False):
+
+    '''This function fixes all seeds to make experiment repeatability.'''
+
     np.random.seed(seed)
     torch.random.manual_seed(seed)
     random.seed(seed)
@@ -16,6 +20,10 @@ def seed_everything(seed, verbose: bool = False):
 
 
 class NasaDataset(Dataset):
+
+    '''Custom pytorch Dataset class. Works with NASA-CMAPSS dataset.
+File must have .csv format and contain "unit_number", "RUL" and sensors columns.
+It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machine_id": pytorch.Tensor}.'''
 
     def __init__(self, dataset_path: str = None, dataset_dict: dict = None,
                  transform = None, device: torch.device = None):
@@ -36,14 +44,16 @@ class NasaDataset(Dataset):
             self.to(device)
     
     def to(self, device):
+        '''Transfers all tensors to "device".'''
         self.dataset = self.dataset.to(device)
         self.ruls = self.ruls.to(device)
         self.machine_ids = self.machine_ids.to(device)
 
     def get_input_shape(self) -> int:
+        '''Returns input shape for neural network.'''
         return self.dataset.shape[1]
     
-    def get_whole_dataset(self) -> tuple:
+    def get_whole_dataset(self) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         return self.dataset, self.machine_ids, self.ruls
 
     def __len__(self) -> int:
@@ -60,52 +70,16 @@ class NasaDataset(Dataset):
 
         return sample
 
-
-class AnomalyDataset(Dataset):
-
-    def __init__(self, dataset_dict: dict = None,
-                 transform = None, device: torch.device = None):
-        
-        self.dataset = dataset_dict['sensors']
-        self.ruls = dataset_dict['rul']
-        self.machine_ids = dataset_dict['machine_id']
-
-        self.transfrom = transform
-
-        if device:
-            self.to(device)
-    
-    def to(self, device):
-        self.dataset = self.dataset.to(device)
-        self.ruls = self.ruls.to(device)
-        self.machine_ids = self.machine_ids.to(device)
-
-    def get_input_shape(self) -> int:
-        return self.dataset.shape[1]
-    
-    def get_whole_dataset(self) -> tuple:
-        return self.dataset, self.machine_ids, self.ruls
-
-    def __len__(self) -> int:
-        return self.dataset.shape[0]
-
-    def __getitem__(self, indeces: int or list or torch.Tensor) -> dict:
-        if torch.is_tensor(indeces):
-            indeces = indeces.tolist()
-        
-        sample = {'sensors': self.dataset[indeces], 'rul': self.ruls[indeces], 'machine_id': self.machine_ids[indeces]}
-
-        if self.transfrom:
-            sample = self.transfrom(sample)
-
-        return sample
-    
-    def get_indeces(self, machine_id: int):
+    def get_indeces(self, machine_id: int) -> torch.Tensor:
+        '''Returns indeces of data points of a certain machine.'''
         return torch.where(self.machine_ids == machine_id)[0]
     
 
 class AnomalyLoader:
-    def __init__(self, dataset: AnomalyDataset, batch_size: int = None):
+
+    '''Loads data by batch for each machine.'''
+
+    def __init__(self, dataset: NasaDataset, batch_size: int = None):
         self.dataset = dataset
         self.batch_size = batch_size if batch_size else len(dataset)
 
@@ -133,6 +107,8 @@ class AnomalyLoader:
 
 class SimpleAE(nn.Module):
 
+    '''Custom pytorch Autoencoder class.'''
+
     def __init__(self, input_shape, layers_sizes: tuple):
         super(SimpleAE, self).__init__()
         self.encoder = nn.Sequential(
@@ -151,13 +127,38 @@ class SimpleAE(nn.Module):
             nn.Linear(in_features=layers_sizes[2], out_features=input_shape)
         )
     
-    def forward(self, x):
+    def forward(self, x) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
         encoded = self.encoder(x)
         decoded = self.decoder(encoded)
         return encoded, decoded
 
 
-def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: float = None):
+class LossAndMetric(nn.Module):
+
+    '''Model evaluating block.'''
+
+    def __init__(self, loss_func: object, metric_func: object, scaler: object = None):
+        super(LossAndMetric, self).__init__()
+        self.loss_func = loss_func
+        self.metric_func = metric_func
+        self.scaler = scaler
+    
+    
+    def forward(self, predicted_values: torch.Tensor, true_values: torch.Tensor) -> tuple:
+        loss = self.loss_func(predicted_values, true_values)
+
+        if self.scaler:
+            metric = self.metric_func(self.scaler.inverse_transform(predicted_values),
+                                 self.scaler.inverse_transform(true_values))
+        else:
+            metric = self.metric_func(predicted_values, true_values)
+        
+        return loss, metric
+
+
+def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: float = None) -> Tuple[NasaDataset, NasaDataset]:
+
+    '''Splits one NasaDatset to two NasaDatasets in test_size:train_size proportion.'''
 
     def __splitter(sensors, machine_ids, ruls, mask: np.array) -> NasaDataset:
         dataset_dict = {
@@ -184,7 +185,7 @@ def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: flo
     return train_dataset, test_dataset
 
 
-def split_anomaly_normal(dataset: NasaDataset):
+def split_anomaly_normal(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset]:
     def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
         dataset_dict = {
             'sensors': sensors[ids],
@@ -199,5 +200,5 @@ def split_anomaly_normal(dataset: NasaDataset):
     normal_ids = torch.where(ruls == 125)[0]
     anomaly_ids = torch.where(ruls < 125)[0]
     normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
-    anomaly_data = AnomalyDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
+    anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
     return normal_data, anomaly_data

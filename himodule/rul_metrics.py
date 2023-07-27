@@ -2,24 +2,6 @@ import numpy as np
 import torch
 from torch import nn
 
-####################
-# JUST TO BE
-# The simplest way to estimate is mean distance between points
-# The less the better
-
-# pytorch.nn.L1loss
-def mean_absolute_distance(test_rul: np.array, target_rul: np.array) -> float:
-    return (test_rul - target_rul).mean()
-
-# To avoid situation of bad results but 0 distance, because of equal negative and positive values
-# pytorch.nn.MSELoss
-def mean_squared_distance(test_rul: np.array, target_rul: np.array) -> float:
-    return ((test_rul - target_rul)**2).mean()
-####################
-
-####################
-# The more confident approach - calculate square between two curves
-# WORKS ONLY WITH LATENT WITH SIZE (1,)
 
 
 class SBCLoss(nn.Module):
@@ -66,12 +48,12 @@ class SBCLoss(nn.Module):
         for pred, trg in zip(prediction, target):
             squares.append(cls.square_between_curves(pred, trg))
         return np.average(squares)
-####################
 
 
-####################
 class RMSELoss(nn.Module):
     
+    '''Custom pytorch Loss class. Calculates Rooted Mean Squared Error.'''
+
     def __init__(self):
         super(RMSELoss, self).__init__()
     
@@ -81,10 +63,8 @@ class RMSELoss(nn.Module):
         loss_func = torch.nn.MSELoss()
         loss = torch.sqrt(loss_func(output, target))
         return loss
-####################
 
 
-####################
 class RULScore(nn.Module):
 
     def __init__(self):
@@ -100,4 +80,3 @@ class RULScore(nn.Module):
 
         loss = (torch.exp(-(err[less] / 10)) - 1).sum() + (torch.exp(err[greater] / 13) - 1).sum()
         return loss
-####################
