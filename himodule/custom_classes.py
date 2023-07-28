@@ -8,17 +8,6 @@ from torch.utils.data import Dataset, DataLoader
 from typing import Tuple
 
 
-def seed_everything(seed, verbose: bool = False):
-
-    '''This function fixes all seeds to make experiment repeatability.'''
-
-    np.random.seed(seed)
-    torch.random.manual_seed(seed)
-    random.seed(seed)
-    if verbose:
-        print('Seeds are fixed')
-
-
 class NasaDataset(Dataset):
 
     '''Custom pytorch Dataset class. Works with NASA-CMAPSS dataset.
@@ -26,7 +15,7 @@ File must have .csv format and contain "unit_number", "RUL" and sensors columns.
 It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machine_id": pytorch.Tensor}.'''
 
     def __init__(self, dataset_path: str = None, dataset_dict: dict = None,
-                 transform = None, device: torch.device = None):
+                 transform = None, targets: np.array = None, device: torch.device = None):
         if dataset_path:
             self.dataset = pd.read_csv(dataset_path)
             self.ruls = torch.FloatTensor(self.dataset.pop('RUL').values)
@@ -37,6 +26,8 @@ It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machin
             self.dataset = dataset_dict['sensors']
             self.ruls = dataset_dict['rul']
             self.machine_ids = dataset_dict['machine_id']
+
+        self.targets = targets if isinstance(targets, type(None)) else torch.FloatTensor(targets)
 
         self.transfrom = transform
 
@@ -52,12 +43,20 @@ It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machin
         self.ruls = self.ruls.to(device)
         self.machine_ids = self.machine_ids.to(device)
 
+        if not isinstance(self.targets, type(None)):
+            self.targets = self.targets.to(device)
+
     def get_input_shape(self) -> int:
         '''Returns input shape for neural network.'''
         return self.dataset.shape[1]
     
-    def get_whole_dataset(self) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        return self.dataset, self.machine_ids, self.ruls
+    def get_whole_dataset(self) \
+        -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor] or \
+            Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        if not isinstance(self.targets, type(None)):
+            return self.dataset, self.machine_ids, self.ruls, self.targets
+        else:
+            return self.dataset, self.machine_ids, self.ruls
 
     def __len__(self) -> int:
         return self.dataset.shape[0]
@@ -67,6 +66,9 @@ It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machin
             idx = idx.tolist()
         
         sample = {'sensors': self.dataset[idx], 'rul': self.ruls[idx], 'machine_id': self.machine_ids[idx]}
+
+        if not isinstance(self.targets, type(None)):
+            sample.update({'targets': self.targets[idx]})
 
         if self.transfrom:
             sample = self.transfrom(sample)
@@ -262,84 +264,3 @@ class LossAndMetric(nn.Module):
             metric = self.metric_func(predicted_values, true_values)
         
         return loss, metric
-
-
-def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: float = None) -> Tuple[NasaDataset, NasaDataset]:
-
-    '''Splits one NasaDatset to two NasaDatasets in test_size:train_size proportion.'''
-
-    def __splitter(sensors, machine_ids, ruls, mask: np.array) -> NasaDataset:
-        dataset_dict = {
-            'sensors': sensors[mask],
-            'machine_id': machine_ids[mask],
-            'rul': ruls[mask]
-        }
-
-        return NasaDataset(dataset_dict=dataset_dict)
-
-
-    if train_size:
-        assert train_size < 1 and train_size > 0, "\'train_size\' has to be in interval (0.0, 1.0)"
-        test_size = 1 - train_size
-    
-    assert test_size < 1 and test_size > 0, "\'test_size\' has to be in interval (0.0, 1.0)"
-
-    sensors, machine_ids, ruls = dataset.get_whole_dataset()
-    uniq_ids = torch.unique(machine_ids)
-    test_machines = torch.tensor(np.random.choice(uniq_ids, int(test_size*len(uniq_ids))))
-    test_mask = torch.isin(machine_ids, test_machines)
-    train_dataset = __splitter(sensors, machine_ids, ruls, torch.logical_not(test_mask))
-    test_dataset = __splitter(sensors, machine_ids, ruls, test_mask)
-    return train_dataset, test_dataset
-
-
-def split_anomaly_normal(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset]:
-    def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
-        dataset_dict = {
-            'sensors': sensors[ids],
-            'machine_id': machine_ids[ids],
-            'rul': ruls[ids]
-        }
-
-        return dataset_dict
-    
-
-    sensors, machine_ids, ruls = dataset.get_whole_dataset()
-    normal_ids = torch.where(ruls == 125)[0]
-    anomaly_ids = torch.where(ruls < 125)[0]
-    normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
-    anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
-    return normal_data, anomaly_data
-
-
-def split_anomaly_normal23(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset]:
-    def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
-        dataset_dict = {
-            'sensors': sensors[ids],
-            'machine_id': machine_ids[ids],
-            'rul': ruls[ids]
-        }
-
-        return dataset_dict
-    
-
-    sensors, machine_ids, ruls = dataset.get_whole_dataset()
-    normal_ids, anomaly_ids = list(), list()
-    for id in machine_ids.unique():
-        r_indeces = torch.where(machine_ids == id)[0]
-        r = ruls[machine_ids == id]
-        mixed = r_indeces[torch.where(r == 125)[0]]
-        normal = mixed[:2*len(mixed)//3]
-        anomaly = r_indeces[torch.where(r < 125)[0]]
-        anomaly = torch.hstack((mixed[2*len(mixed)//3:], anomaly))
-        normal_ids.append(normal)
-        anomaly_ids.append(anomaly)
-
-    normal_ids = torch.hstack(normal_ids)
-    anomaly_ids = torch.hstack(anomaly_ids)
-
-    
-
-    normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
-    anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
-    return normal_data, anomaly_data

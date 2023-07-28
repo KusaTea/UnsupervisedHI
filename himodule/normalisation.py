@@ -46,6 +46,9 @@ class MinMaxScaler:
     
 
 class ErrorScaler:
+
+    '''Scaler to get Health Index Curves from Mean Squared Errors.'''
+
     def fit(self, dataset: torch.Tensor):
         self.mn = dataset.min(axis=0, keepdim=True).values
         self.mx = dataset.max(axis=0, keepdim=True).values
