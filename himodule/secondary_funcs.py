@@ -6,7 +6,7 @@ import random
 
 import torch
 
-from custom_classes import NasaDataset
+from himodule.custom_classes import NasaDataset
 from typing import Tuple
 
 
@@ -68,8 +68,10 @@ def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: flo
     uniq_ids = torch.unique(machine_ids)
     test_machines = torch.tensor(np.random.choice(uniq_ids, int(test_size*len(uniq_ids))))
     test_mask = torch.isin(machine_ids, test_machines)
-    train_dataset = __splitter(sensors, machine_ids, ruls, torch.logical_not(test_mask), targets=targets)
-    test_dataset = __splitter(sensors, machine_ids, ruls, test_mask, targets=targets)
+    train_dataset = __splitter(sensors, machine_ids, ruls, torch.logical_not(test_mask),
+                               targets=None if isinstance(dataset.targets, type(None)) else targets[torch.logical_not(test_mask)])
+    test_dataset = __splitter(sensors, machine_ids, ruls, test_mask,
+                              targets=None if isinstance(dataset.targets, type(None)) else targets[test_mask])
     return train_dataset, test_dataset
 
 

@@ -115,11 +115,12 @@ class WindowedLoader:
 
     '''Loads data by batch for each machine.'''
 
-    def __init__(self, dataset: NasaDataset, batch_size: int = None, window_size: int = 20):
+    def __init__(self, dataset: NasaDataset, batch_size: int = None, window_size: int = 20, for_conv: bool = False):
         self.dataset = dataset
         self.batch_size = batch_size if batch_size else len(dataset)
         self.window_size = window_size
         self.device = self.dataset.device
+        self.for_conv = for_conv
 
         self.reset_everything()
     
@@ -148,11 +149,11 @@ class WindowedLoader:
                     if self.idx < len(self.machine_ids):
                         self.current_machine_id = self.machine_ids[self.idx]
                         self.current_indeces = self.dataset.get_indeces(self.current_machine_id)
-                        self.current_start = -1
+                        self.current_start = 0
                     # If all machines were observed stop iteration
                     else:
                         self.flag = True
-                    break
+                        break
                 
                 # Get windowed data
                 inds = self.current_indeces[self.current_start: self.current_start + self.window_size]
@@ -163,12 +164,18 @@ class WindowedLoader:
                 indeces_batch.append(inds)
 
             try:
-                return {
+                sample = {
                     'sensors': torch.stack(sensors_batch),
                     'rul': torch.stack(rul_batch),
                     'machine_id': torch.stack(machine_id_batch),
                     'indeces': torch.stack(indeces_batch)
                 }
+
+                if self.for_conv:
+                    sample['sensors'] = torch.transpose(sample['sensors'], 1, 2)
+                
+                return sample
+
             except RuntimeError:
                 return self.__next__()
         
@@ -238,22 +245,69 @@ class AEConstructor(nn.Module):
         return encoded, decoded
 
 
+class CAE(nn.Module):
+    def __init__(self, input_channels: int, layers: tuple, conv_kernel: int = 5, conv_stride: int  = 1,
+                 pool_kernel: int = 3, pool_stride: int = 2, unconv_kernels: list = (5, 5), unconv_stride: int = 1):
+        super(CAE, self).__init__()
+
+        self.encoder = nn.Sequential(
+            nn.Conv1d(in_channels=input_channels, out_channels=layers[0],
+                      kernel_size=conv_kernel, stride=conv_stride),
+            nn.SiLU(),
+            nn.MaxPool1d(kernel_size=pool_kernel, stride=pool_stride),
+            nn.Conv1d(in_channels=layers[0], out_channels=layers[1],
+                      kernel_size=conv_kernel, stride=conv_stride),
+            nn.SiLU(),
+            nn.MaxPool1d(kernel_size=pool_kernel, stride=pool_stride),
+            nn.Flatten(),
+            nn.Linear(in_features=layers[2], out_features=layers[3]),
+            nn.BatchNorm1d(layers[3]),
+            nn.SiLU(),
+            nn.Dropout(0.5),
+            nn.Linear(in_features=layers[3], out_features=layers[4])
+            )
+
+        self.decoder = nn.Sequential(
+            nn.Linear(in_features=layers[4], out_features=layers[3]),
+            nn.BatchNorm1d(layers[3]),
+            nn.SiLU(),
+            nn.Dropout(0.5),
+            nn.Linear(in_features=layers[3], out_features=layers[2]),
+            nn.SiLU(),
+            nn.Unflatten(dim=1, unflattened_size=torch.Size((layers[1], -1))),
+            nn.ConvTranspose1d(in_channels=layers[1], out_channels=layers[0],
+                               kernel_size=unconv_kernels[0], stride=unconv_stride),
+            nn.SiLU(),
+            nn.ConvTranspose1d(in_channels=layers[0], out_channels=input_channels,
+                               kernel_size=unconv_kernels[1], stride=unconv_stride)
+        )
+    
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return encoded, decoded
+
+
+
+
 class LossAndMetric(nn.Module):
 
     '''Model evaluating block.'''
 
-    def __init__(self, loss_func: object, metric_func: object, scaler: object = None, transform = None):
+    def __init__(self, loss_func: object, metric_func: object,
+                 scaler: object = None, transform = None, transform_dct: dict = {}):
         super(LossAndMetric, self).__init__()
         self.loss_func = loss_func
         self.metric_func = metric_func
         self.scaler = scaler
         self.transform = transform
+        self.transform_dct = transform_dct
     
     
     def forward(self, predicted_values: torch.Tensor, true_values: torch.Tensor) -> tuple:
         if self.transform:
-            predicted_values = self.transform(predicted_values)
-            true_values = self.transform(true_values)
+            predicted_values = self.transform(predicted_values, **self.transform_dct)
+            true_values = self.transform(true_values, **self.transform_dct)
         
         loss = self.loss_func(predicted_values, true_values)
 
