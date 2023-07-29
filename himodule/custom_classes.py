@@ -8,17 +8,6 @@ from torch.utils.data import Dataset, DataLoader
 from typing import Tuple
 
 
-def seed_everything(seed, verbose: bool = False):
-
-    '''This function fixes all seeds to make experiment repeatability.'''
-
-    np.random.seed(seed)
-    torch.random.manual_seed(seed)
-    random.seed(seed)
-    if verbose:
-        print('Seeds are fixed')
-
-
 class NasaDataset(Dataset):
 
     '''Custom pytorch Dataset class. Works with NASA-CMAPSS dataset.
@@ -26,7 +15,7 @@ File must have .csv format and contain "unit_number", "RUL" and sensors columns.
 It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machine_id": pytorch.Tensor}.'''
 
     def __init__(self, dataset_path: str = None, dataset_dict: dict = None,
-                 transform = None, device: torch.device = None):
+                 transform = None, targets: np.array = None, device: torch.device = None):
         if dataset_path:
             self.dataset = pd.read_csv(dataset_path)
             self.ruls = torch.FloatTensor(self.dataset.pop('RUL').values)
@@ -37,6 +26,8 @@ It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machin
             self.dataset = dataset_dict['sensors']
             self.ruls = dataset_dict['rul']
             self.machine_ids = dataset_dict['machine_id']
+
+        self.targets = targets if isinstance(targets, type(None)) else torch.FloatTensor(targets)
 
         self.transfrom = transform
 
@@ -52,12 +43,20 @@ It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machin
         self.ruls = self.ruls.to(device)
         self.machine_ids = self.machine_ids.to(device)
 
+        if not isinstance(self.targets, type(None)):
+            self.targets = self.targets.to(device)
+
     def get_input_shape(self) -> int:
         '''Returns input shape for neural network.'''
         return self.dataset.shape[1]
     
-    def get_whole_dataset(self) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        return self.dataset, self.machine_ids, self.ruls
+    def get_whole_dataset(self) \
+        -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor] or \
+            Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        if not isinstance(self.targets, type(None)):
+            return self.dataset, self.machine_ids, self.ruls, self.targets
+        else:
+            return self.dataset, self.machine_ids, self.ruls
 
     def __len__(self) -> int:
         return self.dataset.shape[0]
@@ -67,6 +66,9 @@ It returns dictionary {"sensors": pytorch.Tensor, "rul": pytorch.Tensor, "machin
             idx = idx.tolist()
         
         sample = {'sensors': self.dataset[idx], 'rul': self.ruls[idx], 'machine_id': self.machine_ids[idx]}
+
+        if not isinstance(self.targets, type(None)):
+            sample.update({'targets': self.targets[idx]})
 
         if self.transfrom:
             sample = self.transfrom(sample)
@@ -113,11 +115,12 @@ class WindowedLoader:
 
     '''Loads data by batch for each machine.'''
 
-    def __init__(self, dataset: NasaDataset, batch_size: int = None, window_size: int = 20):
+    def __init__(self, dataset: NasaDataset, batch_size: int = None, window_size: int = 20, for_conv: bool = False):
         self.dataset = dataset
         self.batch_size = batch_size if batch_size else len(dataset)
         self.window_size = window_size
         self.device = self.dataset.device
+        self.for_conv = for_conv
 
         self.reset_everything()
     
@@ -146,11 +149,11 @@ class WindowedLoader:
                     if self.idx < len(self.machine_ids):
                         self.current_machine_id = self.machine_ids[self.idx]
                         self.current_indeces = self.dataset.get_indeces(self.current_machine_id)
-                        self.current_start = -1
+                        self.current_start = 0
                     # If all machines were observed stop iteration
                     else:
                         self.flag = True
-                    break
+                        break
                 
                 # Get windowed data
                 inds = self.current_indeces[self.current_start: self.current_start + self.window_size]
@@ -161,12 +164,18 @@ class WindowedLoader:
                 indeces_batch.append(inds)
 
             try:
-                return {
+                sample = {
                     'sensors': torch.stack(sensors_batch),
                     'rul': torch.stack(rul_batch),
                     'machine_id': torch.stack(machine_id_batch),
                     'indeces': torch.stack(indeces_batch)
                 }
+
+                if self.for_conv:
+                    sample['sensors'] = torch.transpose(sample['sensors'], 1, 2)
+                
+                return sample
+
             except RuntimeError:
                 return self.__next__()
         
@@ -236,22 +245,69 @@ class AEConstructor(nn.Module):
         return encoded, decoded
 
 
+class CAE(nn.Module):
+    def __init__(self, input_channels: int, layers: tuple, conv_kernel: int = 5, conv_stride: int  = 1,
+                 pool_kernel: int = 3, pool_stride: int = 2, unconv_kernels: list = (5, 5), unconv_stride: int = 1):
+        super(CAE, self).__init__()
+
+        self.encoder = nn.Sequential(
+            nn.Conv1d(in_channels=input_channels, out_channels=layers[0],
+                      kernel_size=conv_kernel, stride=conv_stride),
+            nn.SiLU(),
+            nn.MaxPool1d(kernel_size=pool_kernel, stride=pool_stride),
+            nn.Conv1d(in_channels=layers[0], out_channels=layers[1],
+                      kernel_size=conv_kernel, stride=conv_stride),
+            nn.SiLU(),
+            nn.MaxPool1d(kernel_size=pool_kernel, stride=pool_stride),
+            nn.Flatten(),
+            nn.Linear(in_features=layers[2], out_features=layers[3]),
+            nn.BatchNorm1d(layers[3]),
+            nn.SiLU(),
+            nn.Dropout(0.5),
+            nn.Linear(in_features=layers[3], out_features=layers[4])
+            )
+
+        self.decoder = nn.Sequential(
+            nn.Linear(in_features=layers[4], out_features=layers[3]),
+            nn.BatchNorm1d(layers[3]),
+            nn.SiLU(),
+            nn.Dropout(0.5),
+            nn.Linear(in_features=layers[3], out_features=layers[2]),
+            nn.SiLU(),
+            nn.Unflatten(dim=1, unflattened_size=torch.Size((layers[1], -1))),
+            nn.ConvTranspose1d(in_channels=layers[1], out_channels=layers[0],
+                               kernel_size=unconv_kernels[0], stride=unconv_stride),
+            nn.SiLU(),
+            nn.ConvTranspose1d(in_channels=layers[0], out_channels=input_channels,
+                               kernel_size=unconv_kernels[1], stride=unconv_stride)
+        )
+    
+    def forward(self, x):
+        encoded = self.encoder(x)
+        decoded = self.decoder(encoded)
+        return encoded, decoded
+
+
+
+
 class LossAndMetric(nn.Module):
 
     '''Model evaluating block.'''
 
-    def __init__(self, loss_func: object, metric_func: object, scaler: object = None, transform = None):
+    def __init__(self, loss_func: object, metric_func: object,
+                 scaler: object = None, transform = None, transform_dct: dict = {}):
         super(LossAndMetric, self).__init__()
         self.loss_func = loss_func
         self.metric_func = metric_func
         self.scaler = scaler
         self.transform = transform
+        self.transform_dct = transform_dct
     
     
     def forward(self, predicted_values: torch.Tensor, true_values: torch.Tensor) -> tuple:
         if self.transform:
-            predicted_values = self.transform(predicted_values)
-            true_values = self.transform(true_values)
+            predicted_values = self.transform(predicted_values, **self.transform_dct)
+            true_values = self.transform(true_values, **self.transform_dct)
         
         loss = self.loss_func(predicted_values, true_values)
 
@@ -262,84 +318,3 @@ class LossAndMetric(nn.Module):
             metric = self.metric_func(predicted_values, true_values)
         
         return loss, metric
-
-
-def split_dataset(dataset: NasaDataset, test_size: float = None, train_size: float = None) -> Tuple[NasaDataset, NasaDataset]:
-
-    '''Splits one NasaDatset to two NasaDatasets in test_size:train_size proportion.'''
-
-    def __splitter(sensors, machine_ids, ruls, mask: np.array) -> NasaDataset:
-        dataset_dict = {
-            'sensors': sensors[mask],
-            'machine_id': machine_ids[mask],
-            'rul': ruls[mask]
-        }
-
-        return NasaDataset(dataset_dict=dataset_dict)
-
-
-    if train_size:
-        assert train_size < 1 and train_size > 0, "\'train_size\' has to be in interval (0.0, 1.0)"
-        test_size = 1 - train_size
-    
-    assert test_size < 1 and test_size > 0, "\'test_size\' has to be in interval (0.0, 1.0)"
-
-    sensors, machine_ids, ruls = dataset.get_whole_dataset()
-    uniq_ids = torch.unique(machine_ids)
-    test_machines = torch.tensor(np.random.choice(uniq_ids, int(test_size*len(uniq_ids))))
-    test_mask = torch.isin(machine_ids, test_machines)
-    train_dataset = __splitter(sensors, machine_ids, ruls, torch.logical_not(test_mask))
-    test_dataset = __splitter(sensors, machine_ids, ruls, test_mask)
-    return train_dataset, test_dataset
-
-
-def split_anomaly_normal(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset]:
-    def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
-        dataset_dict = {
-            'sensors': sensors[ids],
-            'machine_id': machine_ids[ids],
-            'rul': ruls[ids]
-        }
-
-        return dataset_dict
-    
-
-    sensors, machine_ids, ruls = dataset.get_whole_dataset()
-    normal_ids = torch.where(ruls == 125)[0]
-    anomaly_ids = torch.where(ruls < 125)[0]
-    normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
-    anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
-    return normal_data, anomaly_data
-
-
-def split_anomaly_normal23(dataset: NasaDataset) -> Tuple[NasaDataset, NasaDataset]:
-    def __splitter(sensors, machine_ids, ruls, ids: torch.Tensor) -> NasaDataset:
-        dataset_dict = {
-            'sensors': sensors[ids],
-            'machine_id': machine_ids[ids],
-            'rul': ruls[ids]
-        }
-
-        return dataset_dict
-    
-
-    sensors, machine_ids, ruls = dataset.get_whole_dataset()
-    normal_ids, anomaly_ids = list(), list()
-    for id in machine_ids.unique():
-        r_indeces = torch.where(machine_ids == id)[0]
-        r = ruls[machine_ids == id]
-        mixed = r_indeces[torch.where(r == 125)[0]]
-        normal = mixed[:2*len(mixed)//3]
-        anomaly = r_indeces[torch.where(r < 125)[0]]
-        anomaly = torch.hstack((mixed[2*len(mixed)//3:], anomaly))
-        normal_ids.append(normal)
-        anomaly_ids.append(anomaly)
-
-    normal_ids = torch.hstack(normal_ids)
-    anomaly_ids = torch.hstack(anomaly_ids)
-
-    
-
-    normal_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, normal_ids))
-    anomaly_data = NasaDataset(dataset_dict=__splitter(sensors, machine_ids, ruls, anomaly_ids))
-    return normal_data, anomaly_data
